@@ -2,6 +2,7 @@ name: Build APK
 on:
   push:
     branches: [main, master]
+    paths: ['FocusLauncher.zip']
   workflow_dispatch:
 permissions:
   contents: write
@@ -20,15 +21,30 @@ jobs:
       - name: Build APK
         env:
           ANDROID_USER_HOME: ${{ runner.temp }}/android-user-home
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          SECRET_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           mkdir -p "$ANDROID_USER_HOME"
           unzip -q FocusLauncher.zip -d p
+          export KEYSTORE_FILE="$RUNNER_TEMP/focus.jks"
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$SECRET_PASSWORD" ]; then
+            echo "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > "$KEYSTORE_FILE" || { echo "ERROR: KEYSTORE_B64 text is damaged, copy it again"; exit 1; }
+            keytool -list -keystore "$KEYSTORE_FILE" -storepass "$SECRET_PASSWORD" >/dev/null 2>&1 || { echo "ERROR: key or password is wrong"; exit 1; }
+            export KEYSTORE_PASSWORD="$SECRET_PASSWORD"
+            echo "Signing with your permanent key"
+          else
+            keytool -genkeypair -alias focus -keyalg RSA -keysize 2048 -validity 3650 -keystore "$KEYSTORE_FILE" -storepass temporary -keypass temporary -dname "CN=Focus Launcher temporary" >/dev/null 2>&1
+            export KEYSTORE_PASSWORD=temporary
+            echo "WARNING: no permanent key found, using a temporary one"
+          fi
           SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           yes | sudo -H env "JAVA_HOME=$JAVA_HOME" "$SDKM" --licenses >/dev/null 2>&1 || true
           sudo -H env "JAVA_HOME=$JAVA_HOME" "$SDKM" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1 || true
           cd p
-          gradle assembleDebug --no-daemon
-          cp app/build/outputs/apk/debug/app-debug.apk ../FocusLauncher.apk
+          gradle assembleRelease --no-daemon
+          APK=$(find app/build/outputs/apk -name '*.apk' | head -n 1)
+          cp "$APK" ../FocusLauncher.apk
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs ../FocusLauncher.apk | head -n 3 || true
       - uses: actions/upload-artifact@v4
         with:
           name: FocusLauncher
